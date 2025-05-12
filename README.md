@@ -5,11 +5,17 @@ Lexi Owl is an open-source, agentic research workflow for technical and scientif
 ## Features
 
 - **Agentic multi-step workflow:** Iteratively searches, scrapes, and synthesizes answers for maximal coverage.
-- **Flexible scraping:** Supports Jina Reader API, open-source [llm-reader](https://github.com/m92vyas/llm-reader), and BeautifulSoup fallback.
+- **Flexible & Robust scraping:** 
+    - Uses `trafilatura` for main content extraction.
+    - Falls back to `readability-lxml` if `trafilatura` fails.
+    - Leverages `llm-reader`'s `get_page_source` for JavaScript-rendered pages.
+    - Supports Jina Reader API and basic BeautifulSoup fallback.
 - **YouTube support:** Extracts transcripts from YouTube links.
 - **LLM synthesis:** Uses Groq API (LlamaIndex) for answer generation and synthesis.
 - **Reference-rich output:** All answers are verbose, reference-heavy, and saved for audit.
-- **Organized outputs:** Each run creates a dedicated folder with all scraped content and answers.
+- **Organized & Informative outputs:** 
+    - Each run creates a dedicated, uniquely named folder (e.g., `outputs/your_query_slug_1`).
+    - Scraped files include a header with URL, timestamp, and extraction method.
 
 ## Installation
 
@@ -36,8 +42,8 @@ pip install -r requirements.txt
 ```
 
 **Note:**  
-- The project uses [llm-reader](https://github.com/m92vyas/llm-reader) (async, headless browser-based).  
-- You may need to install Playwright browsers for llm-reader:
+- The `requirements.txt` file includes necessary libraries like `trafilatura`, `readability-lxml`, `beautifulsoup4`, `youtube-transcript-api`, and libraries for `llm-reader`'s page fetching.
+- You may need to install Playwright browsers for the page fetching part used by the `llm-reader` method:
   ```bash
   pip install playwright
   playwright install
@@ -64,23 +70,25 @@ python agent.py
 ```
 
 - The script will prompt the LLM to generate diverse search queries for your research question.
+- It will determine a unique output folder name for the run (e.g., `outputs/your_query_slug_1`).
 - For each query, it will:
   - Search using Brave Search API.
-  - Scrape the top results using llm-reader (or Jina Reader/fallback).
+  - Scrape the top results using the configured method (defaulting to the Trafilatura/Readability combo via `llm-reader` mode).
   - Aggregate and synthesize answers using the Groq LLM.
-- All outputs are saved in a dedicated folder under `outputs/`, named after your research question.
+- All outputs are saved in the dedicated run folder under `outputs/`.
 
 ### Output Structure
 
-Each run creates a folder in `outputs/`:
+Each run creates a uniquely named folder in `outputs/`:
 
 ```
 outputs/
-  your_query_slug/
+  your_query_slug_N/             # N increments if the base slug exists
     final_answer.md                # Synthesized, reference-rich answer
     all_iteration_answers.md       # All per-step answers, search prompts, and URLs
     scraped_content/
-      *.md                        # LLM-friendly Markdown files for each scraped source
+      *.md                        # LLM-friendly Markdown file for each scraped source
+                                  # Includes header: Title, URL, Scraped Timestamp, Method
 ```
 
 ### Example
@@ -98,11 +106,15 @@ outputs/beekeeping_lora_open_source_monitoring_solar_sensors_audio/
 
 ## Scraping Methods
 
-- **llm-reader (default):** Open-source, async, headless browser-based, LLM-friendly Markdown output.
-- **Jina Reader:** Free (20 RPM) or with API key (500 RPM), Markdown output.
-- **Fallback:** BeautifulSoup HTML-to-text for simple pages.
+- **llm-reader (default):** 
+    - Uses `url_to_llm_text.get_page_source` (async, headless browser) to fetch HTML.
+    - Extracts main content using `trafilatura`.
+    - Falls back to `readability-lxml` if `trafilatura` yields minimal content.
+    - Recommended for complex, JavaScript-heavy pages.
+- **Jina Reader:** Free (20 RPM) or with API key (500 RPM), Markdown output. Simple API call.
+- **Fallback:** Basic `requests` + `BeautifulSoup` HTML-to-text for simple static pages.
 
-You can control the scraping method in `scraper.py` via the `method` parameter (`'auto'`, `'llm-reader'`, `'jina'`, `'fallback'`).
+You can control the scraping method in `agent.py` via the `method` parameter passed to `scrape_urls_to_markdown` (currently hardcoded to `llm-reader` in the main block, but could be changed).
 
 ## Customization
 
@@ -113,11 +125,12 @@ You can control the scraping method in `scraper.py` via the `method` parameter (
 
 ## Troubleshooting
 
-- **llm-reader not working?**
-  - Ensure you installed it from GitHub:  
-    `pip install git+https://github.com/m92vyas/llm-reader.git`
-  - Install Playwright and browsers:  
+- **`get_page_source` not working or other `llm-reader` related issues?**
+  - Ensure you installed its dependencies (Playwright):  
     `pip install playwright && playwright install`
+  - Check if `url_to_llm_text` is correctly installed (implicitly via requirements or manually if needed: `pip install git+https://github.com/m92vyas/llm-reader.git`)
+- **`trafilatura` or `readability` errors?**
+  - Ensure they are installed via `pip install -r requirements.txt`.
 - **Jina Reader 402/429 errors?**
   - You are rate-limited. Use an API key or throttle requests.
 - **YouTube transcript errors?**
@@ -125,7 +138,9 @@ You can control the scraping method in `scraper.py` via the `method` parameter (
 
 ## References
 
-- [llm-reader](https://github.com/m92vyas/llm-reader)
+- [Trafilatura](https://trafilatura.readthedocs.io/)
+- [Readability-lxml](https://github.com/buriy/python-readability)
+- [llm-reader (for get_page_source)](https://github.com/m92vyas/llm-reader)
 - [Jina Reader API](https://jina.ai/reader/)
 - [LlamaIndex](https://github.com/jerryjliu/llama_index)
 - [Brave Search API](https://brave.com/search/api/)
