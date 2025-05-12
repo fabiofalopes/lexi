@@ -181,24 +181,201 @@ def search_scrape_and_answer(
 
 def generate_query_slug(user_question: str, model_name: str = "llama-3.3-70b-versatile", temperature: float = 0.0) -> str:
     """
-    Use the LLM to generate a rigid, consistent slug/folder name for the user query.
+    Use the LLM to generate a rigid, consistent slug/folder name for the user query,
+    AND ensures the final path within 'outputs' is unique.
+    Returns the unique path (e.g., outputs/my_query_slug_1).
     """
-    system_prompt = (
+    parent_output_dir = "outputs" # Main directory for all runs
+    os.makedirs(parent_output_dir, exist_ok=True)
+
+    system_prompt_slug = (
         "You are a filename/slug generator. Given a user research question, generate a short, lowercase, underscore-separated folder name (max 60 chars, no special chars, no spaces, no numbers unless in the query, no stopwords, always deterministic for the same input). Output ONLY the slug, nothing else."
     )
-    slug = simple_agentic_prompt(
+    base_slug = simple_agentic_prompt(
         user_prompt=f"User question: {user_question}",
         model_name=model_name,
         temperature=temperature,
-        system_prompt=system_prompt
+        system_prompt=system_prompt_slug
     ).strip().replace("/", "_")
-    # Fallback: basic slugify if LLM fails
+
+    # Fallback and cleanup for base slug
     import re
-    slug = re.sub(r'[^a-z0-9_]', '', slug.lower().replace(' ', '_'))
-    slug = slug[:60]
-    if not slug:
-        slug = "research_query"
-    return slug
+    base_slug = re.sub(r'[^a-z0-9_]', '', base_slug.lower().replace(' ', '_'))
+    base_slug = re.sub(r'_+', '_', base_slug).strip('_') # Remove multiple underscores
+    base_slug = base_slug[:60]
+    if not base_slug:
+        base_slug = "research_query"
+    
+    # Construct the base path within the parent directory
+    base_folder_path = os.path.join(parent_output_dir, base_slug)
+
+    # --- Ensure Unique Folder Path ---
+    unique_folder_path = base_folder_path
+    counter = 1
+    while os.path.exists(unique_folder_path) and os.path.isdir(unique_folder_path):
+        print(f"[AgentSetup] Base folder '{unique_folder_path}' already exists. Generating a new name.")
+        unique_folder_path = f"{base_folder_path}_{counter}"
+        counter += 1
+    # --- End Ensure Unique Folder Path ---
+
+    if unique_folder_path != base_folder_path:
+        print(f"[AgentSetup] Using unique run folder: '{unique_folder_path}'")
+    else:
+        print(f"[AgentSetup] Using base run folder: '{unique_folder_path}'")
+
+    # Return the final unique path
+    return unique_folder_path
+
+# --- Multi-Iteration Agentic Workflow ---
+def multi_agentic_search_scrape_answer(
+    user_question: str,
+    num_iterations: int = 3,
+    num_results: int = 2,
+    model_name: str = "llama-3.3-70b-versatile",
+    temperature: float = 0.2,
+    system_prompt: Optional[str] = AGENTIC_SYSTEM_PROMPT,
+    scrape_output_folder: str = "outputs/_agent_temp_scraped",
+    jina_api_key: Optional[str] = None,
+    youtube_transcript_languages: Optional[List[str]] = None,
+    delay: float = 1.0
+) -> str:
+    """
+    Runs the full multi-agent workflow: generate queries, search, scrape, answer per iteration, synthesize.
+    Ensures a unique output folder for each run.
+    """
+    # 1. Generate Unique Output Folder Path for this Run
+    unique_run_folder = generate_query_slug(user_question, model_name=model_name)
+    # Define the specific subfolder for scraped content within the unique run folder
+    scraped_content_subfolder = os.path.join(unique_run_folder, "scraped_content") 
+
+    # 2. Generate Diverse Search Queries
+    print("\nGenerating unique, diverse search queries with the LLM...")
+    search_query_generation_prompt = (
+        f"Given the user question: '{user_question}', generate a list of {num_iterations} unique, diverse, and non-overlapping search queries that, together, will maximize the coverage of relevant information. "
+        "Each query should be different in focus, keywords, or angle, but all should be relevant to the user question. Output only the list, one per line."
+    )
+    queries_text = simple_agentic_prompt(
+        user_prompt=search_query_generation_prompt,
+        model_name=model_name,
+        temperature=temperature,
+        system_prompt="You are a search query diversification agent."
+    )
+    # Parse queries (split by lines, remove empty)
+    queries = [q.strip('"').strip() for q in queries_text.splitlines() if q.strip()]
+    if len(queries) < num_iterations:
+        print(f"Warning: Only {len(queries)} unique queries generated, expected {num_iterations}.")
+        queries += [user_question] * (num_iterations - len(queries))
+    print("\nGenerated search queries:")
+    for i, q in enumerate(queries[:num_iterations], 1):
+        print(f"{i}. {q}")
+
+    # 3. For each query, search, scrape, and answer
+    answers = []
+    search_prompts = []
+    all_search_urls = []
+    for i in range(num_iterations):
+        print(f"\n--- Iteration {i+1} ---")
+        query = queries[i]
+        search_prompts.append(query)
+        print(f"Search prompt for iteration {i+1}: {query}")
+
+        # Search
+        search_results = get_brave_search_results(query, api_key=os.environ.get("BRAVE_API_KEY"), count=num_results)
+        if not search_results:
+            print(f"No search results for iteration {i+1}.")
+            answers.append("No search results found.")
+            all_search_urls.append([])
+            continue
+        urls_this_iter = [item.get('url') for item in search_results if item.get('url')]
+        all_search_urls.append(urls_this_iter)
+        print(f"Brave search URLs for iteration {i+1}:")
+        for url in urls_this_iter:
+            print(f"- {url}")
+
+        # Scrape (Pass the unique path for this run's scraped content)
+        # scrape_urls_to_markdown will create the scraped_content_subfolder if it doesn't exist
+        scrape_urls_to_markdown(
+            search_results,
+            scraped_content_subfolder, # Use the subfolder path within the unique run folder
+            jina_api_key=jina_api_key,
+            delay=delay,
+            youtube_transcript_languages=youtube_transcript_languages or ['en']
+        )
+
+        # Aggregate content (Read from the correct subfolder)
+        aggregated_content = []
+        for item_idx, item in enumerate(search_results, 1):
+            title = item.get('title', f'result_{item_idx}')
+            slug = slugify(title)
+            # Ensure filename uniqueness within the subfolder (same logic as in scraper.py)
+            filename_candidate = f"{slug}.md"
+            filepath = os.path.join(scraped_content_subfolder, filename_candidate) 
+            file_counter = 1
+            while not os.path.exists(filepath):
+                 # If the primary name doesn't exist, check for numbered fallbacks
+                 # This might happen if slugify was inconsistent or file saving failed/retried
+                 filename_candidate = f"{slug}_{file_counter}.md"
+                 filepath = os.path.join(scraped_content_subfolder, filename_candidate)
+                 file_counter += 1
+                 if file_counter > 5: # Safety break to avoid infinite loop
+                      filepath = None # Assume file is missing
+                      break 
+            # If after checking numbered versions, still no file, try the original fallback
+            if not filepath or not os.path.exists(filepath):
+                 fallback = os.path.join(scraped_content_subfolder, f"result_{item_idx}.md") # Legacy name
+                 if os.path.exists(fallback):
+                      filepath = fallback
+                 else:
+                      print(f"Warning: Scraped file for '{title}' not found at expected paths in {scraped_content_subfolder}.")
+                      continue # Skip this result if file not found
+                      
+            if filepath:
+                 try:
+                      with open(filepath, 'r', encoding='utf-8') as f:
+                           content = f.read()
+                      aggregated_content.append(f"## Source: {title}\nURL: <{item.get('url')}>\n\n{content}\n")
+                 except Exception as e:
+                      print(f"Error reading file {filepath}: {e}")
+        
+        if not aggregated_content:
+            answers.append("No content could be scraped from the search results.")
+            continue
+        sources_text = "\n\n---\n\n".join(aggregated_content)
+        user_prompt = build_iteration_user_prompt(query, sources_text)
+        answer = simple_agentic_prompt(
+            user_prompt=user_prompt,
+            model_name=model_name,
+            temperature=temperature,
+            system_prompt=system_prompt
+        )
+        answers.append(answer)
+        print(f"\nAgentic answer for iteration {i+1} (truncated):\n{answer[:500]}\n{'...' if len(answer) > 500 else ''}")
+
+    # 4. Boil down all answers into a final comprehensive answer
+    print("\n--- Boiling down all answers into a final comprehensive answer ---")
+    boil_down_prompt = build_final_synthesis_prompt(user_question, answers)
+    final_answer = simple_agentic_prompt(
+        user_prompt=boil_down_prompt,
+        model_name=model_name,
+        temperature=temperature,
+        system_prompt=FINAL_SYNTHESIS_SYSTEM_PROMPT
+    )
+    print("\nFINAL SYNTHESIZED ANSWER:\n")
+    print(final_answer)
+
+    # Save the final answer and all per-iteration answers in the base of the query folder
+    output_file = os.path.join(unique_run_folder, "final_answer.md")
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(final_answer)
+    print(f"\nFinal answer saved to {output_file}")
+
+    all_answers_file = os.path.join(unique_run_folder, "all_iteration_answers.md")
+    with open(all_answers_file, 'w', encoding='utf-8') as f:
+        for i, (prompt, answer, urls) in enumerate(zip(search_prompts, answers, all_search_urls), 1):
+            f.write(f"\n---\n\n# Iteration {i}\n\n## Search Prompt:\n{prompt}\n\n## Brave Search URLs:\n" + "\n".join(urls) + f"\n\n## Agentic Answer:\n{answer}\n")
+    print(f"All iteration answers saved to {all_answers_file}")
+
+    return final_answer
 
 # --- Example usage ---
 if __name__ == "__main__":
@@ -207,20 +384,19 @@ if __name__ == "__main__":
         print(f"- {k}: {v}")
     
     #user_question = "Urze. Portugal, Coimbra, Pampilhosa da Serra, Malhada do Rei. Produção de mel e enxames de abelhas, rainhas e optimização das colónias, desdobramentos. Tradição do mel da Urze. Mecanismos de monitorização e controlo de colónias. Precision beekeeping. Como implementar soluções existentes e até open source para a nossa região?"
-    user_question = "We want to implement our monitoring system for beehives. Open source solutions for beekeeping, lora, batteries, solar panels, recording audio, sensors"
+    #user_question = "We want to implement our monitoring system for beehives. Open source solutions for beekeeping, lora, batteries, solar panels, recording audio, sensors"
+    user_question = "Como cultivar urze de forma controlada?"
     print("\nRunning multi-agentic search-scrape-answer workflow...")
 
-    NUM_ITERATIONS = 4
-    SEARCH_RESULTS_PER_ITER = 3
+    NUM_ITERATIONS = 3
+    SEARCH_RESULTS_PER_ITER = 2
     model_name = "meta-llama/llama-4-maverick-17b-128e-instruct"
     temperature = 0.25
 
     # Generate a consistent folder name for this run based on the user query
-    query_slug = generate_query_slug(user_question, model_name=model_name, temperature=0.0)
-    output_dir = os.path.join("outputs", query_slug)
+    output_dir = generate_query_slug(user_question, model_name=model_name, temperature=0.0)
     scrape_output_folder = os.path.join(output_dir, "scraped_content")
     os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(scrape_output_folder, exist_ok=True)
     jina_api_key = os.environ.get("JINA_API_KEY")
     youtube_transcript_languages = ['en', 'pt']
     delay = 1.5
