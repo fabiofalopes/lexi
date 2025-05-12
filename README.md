@@ -130,11 +130,6 @@ You can control the scraping method in `scraper.py` via the `method` parameter (
 - [LlamaIndex](https://github.com/jerryjliu/llama_index)
 - [Brave Search API](https://brave.com/search/api/)
 
-## License
-
-MIT License
-
----
-
-**Contributions and issues welcome!**  
-If you use or extend this project, please consider starring the upstream open-source projects that make it possible.
+## Scrapers to consider
+- [Scrapegraph-ai](https://github.com/ScrapeGraphAI/Scrapegraph-ai)
+- [scrape2md](https://github.com/tarasglek/scrape2md)
