@@ -1,0 +1,11 @@
+__pycache__
+
+venv/
+.env
+
+_agent_temp_scraped/
+scraped_content_with_transcripts_bk/
+scraped_content_with_transcripts/
+outputs/
+
+.patterns/
