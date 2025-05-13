@@ -248,6 +248,9 @@ def multi_agentic_search_scrape_answer(
     # Define the specific subfolder for scraped content within the unique run folder
     scraped_content_subfolder = os.path.join(unique_run_folder, "scraped_content") 
 
+    # Track all URLs scraped across all iterations
+    already_scraped_urls = set()
+
     # 2. Generate Diverse Search Queries
     print("\nGenerating unique, diverse search queries with the LLM...")
     search_query_generation_prompt = (
@@ -286,25 +289,33 @@ def multi_agentic_search_scrape_answer(
             answers.append("No search results found.")
             all_search_urls.append([])
             continue
-        urls_this_iter = [item.get('url') for item in search_results if item.get('url')]
+        # Filter out URLs already scraped in previous iterations
+        filtered_search_results = [item for item in search_results if item.get('url') and item.get('url') not in already_scraped_urls]
+        urls_this_iter = [item.get('url') for item in filtered_search_results if item.get('url')]
         all_search_urls.append(urls_this_iter)
-        print(f"Brave search URLs for iteration {i+1}:")
+        print(f"Brave search URLs for iteration {i+1} (excluding already scraped):")
         for url in urls_this_iter:
             print(f"- {url}")
 
+        if not filtered_search_results:
+            print(f"All search results for iteration {i+1} have already been scraped. Skipping.")
+            answers.append("No new search results to scrape.")
+            continue
+
         # Scrape (Pass the unique path for this run's scraped content)
-        # scrape_urls_to_markdown will create the scraped_content_subfolder if it doesn't exist
         scrape_urls_to_markdown(
-            search_results,
+            filtered_search_results,
             scraped_content_subfolder, # Use the subfolder path within the unique run folder
             jina_api_key=jina_api_key,
             delay=delay,
             youtube_transcript_languages=youtube_transcript_languages or ['en']
         )
+        # Add these URLs to the already_scraped_urls set
+        already_scraped_urls.update(urls_this_iter)
 
         # Aggregate content (Read from the correct subfolder)
         aggregated_content = []
-        for item_idx, item in enumerate(search_results, 1):
+        for item_idx, item in enumerate(filtered_search_results, 1):
             title = item.get('title', f'result_{item_idx}')
             slug = slugify(title)
             # Ensure filename uniqueness within the subfolder (same logic as in scraper.py)
@@ -313,7 +324,6 @@ def multi_agentic_search_scrape_answer(
             file_counter = 1
             while not os.path.exists(filepath):
                  # If the primary name doesn't exist, check for numbered fallbacks
-                 # This might happen if slugify was inconsistent or file saving failed/retried
                  filename_candidate = f"{slug}_{file_counter}.md"
                  filepath = os.path.join(scraped_content_subfolder, filename_candidate)
                  file_counter += 1
@@ -385,13 +395,18 @@ if __name__ == "__main__":
     
     #user_question = "Urze. Portugal, Coimbra, Pampilhosa da Serra, Malhada do Rei. Produção de mel e enxames de abelhas, rainhas e optimização das colónias, desdobramentos. Tradição do mel da Urze. Mecanismos de monitorização e controlo de colónias. Precision beekeeping. Como implementar soluções existentes e até open source para a nossa região?"
     #user_question = "We want to implement our monitoring system for beehives. Open source solutions for beekeeping, lora, batteries, solar panels, recording audio, sensors"
-    user_question = "Como cultivar urze de forma controlada?"
+    #user_question = "Optimização precise beekeeping. Como produzir e escalar produção de enxames faze-las prosperar? Como cultivar urze de forma controlada? Especificamente, como cultivar na zona da Pampilhosa da Serra? Costuma ser feito ou já foi feito? Faz sentido fazer isso para optimizar a produção de enxames e a produção da colmeia em geral?"
+    
+    #user_question = "Urze em escala ou como como cultivar urze de forma intenciva e controlada de forma a potenciar essa flora em zona de montanha ou serra neste contexto, Pampilhosa da Serra, Malhada do Rei, Coimbra, Portugal, onde por terem ocorrido incendios perdeu essa flora e ainda não foi recuperada. Tecnica de refloração da flora nestes casos."
+    
+    #user_question = "Estou interessado no projecto meshtastic Quero pesquisar mais sobre isso Quero saber como construir E essencialmente ter devices deste tipo o mais barato possível LoRa, LoRaWAN, meshtastic, diferenças, semelhanças, tudo o que está à volta desta tecnologia. Queremos perceber a stack inteira queremos perceber exactamente como participar e construir as nossas pr redes de baixo custo tanto energ como monet em si Queremos investir o mínimo possível, mas também estamos dispostos a comprar alguns devices, como é óbvio. E queremos aprender o máximo possível. o máximo possível. Portanto, queremos cavar o máximo mais profundamente possível do tipo de documentação, os dispositivos mais populares para comprar, como conseguir comunicar realmente abertamente dentro desta rede, como construir serviços dentro da rede, os meus projetos de exemplo, monitorização de locais remotos, projetos de telemetria, usar a rede Lora para transmissão de dados, streaming de informação, tudo isso e mais alguma coisa."
+    
     print("\nRunning multi-agentic search-scrape-answer workflow...")
 
-    NUM_ITERATIONS = 3
-    SEARCH_RESULTS_PER_ITER = 2
+    NUM_ITERATIONS = 10
+    SEARCH_RESULTS_PER_ITER = 8
     model_name = "meta-llama/llama-4-maverick-17b-128e-instruct"
-    temperature = 0.25
+    temperature = 0.3
 
     # Generate a consistent folder name for this run based on the user query
     output_dir = generate_query_slug(user_question, model_name=model_name, temperature=0.0)
