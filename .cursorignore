@@ -7,8 +7,11 @@ __pycache__
 *.pyw
 *.pyz
 
+.env
+
 .patterns/
 scraped_content_with_transcripts_bk/
 scraped_content_with_transcripts/
+outputs/
 
 venv/
