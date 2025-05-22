@@ -1,4 +1,5 @@
 from agent import run_search_and_synthesize_workflow
+from config import AgentConfig
 import os
 
 if __name__ == "__main__":
@@ -25,17 +26,19 @@ if __name__ == "__main__":
 
     # --- Execute Workflow ---
     try:
-        run_search_and_synthesize_workflow(
-            user_question=USER_QUERY,
+        config = AgentConfig(
             model_name=MODEL_NAME,
             temperature=TEMPERATURE,
             num_iterations=NUM_ITERATIONS,
-            search_results_per_iter=SEARCH_RESULTS_PER_ITER,
+            num_search_results_per_iteration=SEARCH_RESULTS_PER_ITER,
             output_dir=OUTPUT_DIR_NAME,
             jina_api_key=JINA_API_KEY,
             youtube_transcript_languages=YOUTUBE_TRANSCRIPT_LANGUAGES,
             delay=DELAY
         )
+        run_search_and_synthesize_workflow(config=config)
         print(f"Workflow execution finished. Check the '{OUTPUT_DIR_NAME}' folder.")
     except Exception as e:
-        print(f"An error occurred during workflow execution: {e}") 
+        print(f"An error occurred during workflow execution: {e}")
+
+# The agentic workflow and LLM logic are now modular and separated (see llm.py and agent.py) 

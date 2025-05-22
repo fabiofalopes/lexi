@@ -1,4 +1,7 @@
-from llama_index.llms.groq import Groq
+"""
+agent.py
+Agentic workflow orchestration. All LLM logic is now in llm.py.
+"""
 from llama_index.core.llms import ChatMessage
 from typing import List, Optional, Dict
 import os
@@ -8,6 +11,28 @@ load_dotenv()
 # Import search and scraping utilities
 from search import get_brave_search_results
 from scraper import scrape_urls_to_markdown, slugify
+
+# Import prompts and constants
+from prompts import (
+    AGENTIC_SYSTEM_PROMPT,
+    FINAL_SYNTHESIS_SYSTEM_PROMPT,
+    SYSTEM_PROMPT_SLUG,
+    SEARCH_QUERY_DIVERSIFICATION_SYSTEM_PROMPT,
+    build_iteration_user_prompt,
+    build_final_synthesis_prompt,
+    build_search_query_generation_prompt,
+)
+from constants import (
+    FINAL_ANSWER_FILENAME,
+    ALL_ITERATION_ANSWERS_FILENAME,
+    SCRAPED_CONTENT_DIR,
+    PARENT_OUTPUT_DIR,
+    DEFAULT_SCRAPE_OUTPUT_FOLDER,
+    LEGACY_RESULT_PREFIX,
+)
+from output_utils import save_run_outputs
+from config import AgentConfig
+from llm import simple_agentic_prompt, GROQ_MODELS
 
 # List of available Groq models (as of May 2025)
 GROQ_MODELS: Dict[str, str] = {
@@ -23,100 +48,14 @@ GROQ_MODELS: Dict[str, str] = {
     # Add more as needed
 }
 
-class GroqLLMWrapper:
-    def __init__(
-        self,
-        model_name: str = "llama-3.3-70b-versatile",
-        temperature: float = 0.1
-    ):
-        api_key = os.environ.get("GROQ_API_KEY")
-        if not api_key:
-            raise ValueError("GROQ_API_KEY not set in environment variables or .env file")
-        
-        self.llm = Groq(
-            model=model_name,
-            api_key=api_key,
-            temperature=temperature
-        )
-        self.model_name = model_name
-        self.temperature = temperature
-        
-    def get_llm(self):
-        return self.llm
-
-    def chat(self, messages: List[ChatMessage]) -> str:
-        try:
-            response = self.llm.chat(messages)
-            return response.message.content
-        except Exception as e:
-            raise Exception(f"Error in Groq API call: {str(e)}")
-
-# --- Simple agentic function using the wrapper ---
-def simple_agentic_prompt(
-    user_prompt: str,
-    model_name: str = "llama-3.3-70b-versatile",
-    temperature: float = 0.1,
-    system_prompt: Optional[str] = None
-) -> str:
-    """
-    A simple agentic function that sends a prompt to the Groq LLM.
-    Optionally includes a system prompt for agentic behavior.
-    """
-    wrapper = GroqLLMWrapper(model_name=model_name, temperature=temperature)
-    messages = []
-    if system_prompt:
-        messages.append(ChatMessage(role="system", content=system_prompt))
-    messages.append(ChatMessage(role="user", content=user_prompt))
-    return wrapper.chat(messages)
-
-# --- Improved system prompt for maximal extraction ---
-AGENTIC_SYSTEM_PROMPT = (
-    "You are a research assistant. Your job is to extract, quote, and synthesize as much information as possible from the provided sources. "
-    "Be exhaustive, detailed, and reference the sources directly. Do not summarize unless explicitly asked. "
-    "Err on the side of including more information, not less."
-)
-
-# --- Improved per-iteration user prompt template ---
-def build_iteration_user_prompt(query: str, sources_text: str) -> str:
-    return (
-        f"Using the following sources, answer the question: {query}\n\n"
-        f"SOURCES:\n\n{sources_text}\n\n"
-        "Instructions:\n"
-        "- Extract and include as much relevant information as possible.\n"
-        "- Quote and reference the sources liberally.\n"
-        "- Organize the answer in sections or bullet points if helpful.\n"
-        "- Do NOT summarize or omit details unless they are clearly irrelevant.\n"
-        "- The answer should be comprehensive, detailed, and full of references/quotes from the sources.\n"
-    )
-
-# --- Improved final synthesis system prompt ---
-FINAL_SYNTHESIS_SYSTEM_PROMPT = (
-    "You are a research synthesis agent. Your job is to combine all the information from the previous answers into a single, comprehensive, detailed, and referenced Markdown document. "
-    "Err on the side of verbosity and coverage. Include all relevant details, quotes, and references from the answers. Do not summarize unless explicitly asked."
-)
-
-# --- Improved final synthesis user prompt template ---
-def build_final_synthesis_prompt(user_question: str, answers: list) -> str:
-    return (
-        f"Given the user question: '{user_question}', and the following several answers from different search and scrape iterations, "
-        "write a comprehensive, referenced Markdown answer that synthesizes all the information, cites sources, and is suitable for a technical audience.\n\n"
-        "Instructions:\n"
-        "- Be exhaustive and detailed.\n"
-        "- Quote and reference the sources liberally.\n"
-        "- Organize the answer in sections or bullet points if helpful.\n"
-        "- Do NOT summarize or omit details unless they are clearly irrelevant.\n"
-        "- The answer should be comprehensive, detailed, and full of references/quotes from the answers.\n\n"
-        + chr(10).join([f"Answer {i+1}:\n{a}\n" for i, a in enumerate(answers)])
-    )
-
 # --- New: Search, Scrape, and Answer Agent Function ---
 def search_scrape_and_answer(
     query: str,
-    num_results: int = 3,
+    num_search_results_per_iteration: int = 3,
     model_name: str = "llama-3.3-70b-versatile",
     temperature: float = 0.2,
     system_prompt: Optional[str] = AGENTIC_SYSTEM_PROMPT,
-    scrape_output_folder: str = "outputs/_agent_temp_scraped",
+    scrape_output_folder: str = DEFAULT_SCRAPE_OUTPUT_FOLDER,
     jina_api_key: Optional[str] = None,
     youtube_transcript_languages: Optional[List[str]] = None,
     delay: float = 1.0
@@ -127,7 +66,7 @@ def search_scrape_and_answer(
     """
     # 1. Search
     print(f"Searching for: {query}")
-    search_results = get_brave_search_results(query, api_key=os.environ.get("BRAVE_API_KEY"), count=num_results)
+    search_results = get_brave_search_results(query, api_key=os.environ.get("BRAVE_API_KEY"), count=num_search_results_per_iteration)
     if not search_results:
         return "No search results found."
 
@@ -145,17 +84,10 @@ def search_scrape_and_answer(
     # Read scraped content
     aggregated_content = []
     for i, item in enumerate(search_results, 1):
-        title = item.get('title', f'result_{i}')
-        slug = slugify(title)
-        filename = f"{slug}.md"
-        filepath = os.path.join(scrape_output_folder, filename)
+        title = item.get('title', f'{LEGACY_RESULT_PREFIX}{i}')
+        filepath = get_scraped_content_filepath(scrape_output_folder, title, i, slugify)
         if not os.path.exists(filepath):
-            # Try fallback: result_{i}.md (legacy)
-            fallback = os.path.join(scrape_output_folder, f"result_{i}.md")
-            if os.path.exists(fallback):
-                filepath = fallback
-            else:
-                continue
+            continue
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
         aggregated_content.append(f"# {title}\n\n{content}\n")
@@ -185,12 +117,10 @@ def generate_query_slug(user_question: str, model_name: str = "llama-3.3-70b-ver
     AND ensures the final path within 'outputs' is unique.
     Returns the unique path (e.g., outputs/my_query_slug_1).
     """
-    parent_output_dir = "outputs" # Main directory for all runs
+    parent_output_dir = PARENT_OUTPUT_DIR # Main directory for all runs
     os.makedirs(parent_output_dir, exist_ok=True)
 
-    system_prompt_slug = (
-        "You are a filename/slug generator. Given a user research question, generate a short, lowercase, underscore-separated folder name (max 60 chars, no special chars, no spaces, no numbers unless in the query, no stopwords, always deterministic for the same input). Output ONLY the slug, nothing else."
-    )
+    system_prompt_slug = SYSTEM_PROMPT_SLUG
     base_slug = simple_agentic_prompt(
         user_prompt=f"User question: {user_question}",
         model_name=model_name,
@@ -227,290 +157,230 @@ def generate_query_slug(user_question: str, model_name: str = "llama-3.3-70b-ver
     return unique_folder_path
 
 # --- Multi-Iteration Agentic Workflow ---
+def execute_single_iteration(
+    query: str,
+    already_scraped_urls: set,
+    scraped_content_subfolder: str,
+    model_name: str,
+    temperature: float,
+    system_prompt: str,
+    num_search_results: int,
+    jina_api_key: str = None,
+    youtube_transcript_languages: list = None,
+    delay: float = 1.0
+):
+    """
+    Executes a single search/scrape/answer iteration.
+    Returns: (answer, urls_this_iter, warnings)
+    """
+    warnings = []
+    # 1. Search
+    search_results = get_brave_search_results(query, api_key=os.environ.get("BRAVE_API_KEY"), count=num_search_results)
+    if not search_results:
+        return "No search results found.", [], ["No search results found."]
+    # 2. Filter already scraped URLs
+    filtered_search_results = [item for item in search_results if item.get('url') and item.get('url') not in already_scraped_urls]
+    urls_this_iter = [item.get('url') for item in filtered_search_results if item.get('url')]
+    if not filtered_search_results:
+        return "No new search results to scrape.", urls_this_iter, ["All search results already scraped."]
+    # 3. Scrape
+    scrape_urls_to_markdown(
+        filtered_search_results,
+        scraped_content_subfolder,
+        jina_api_key=jina_api_key,
+        delay=delay,
+        youtube_transcript_languages=youtube_transcript_languages or ['en']
+    )
+    # 4. Aggregate content
+    aggregated_content = []
+    for item_idx, item in enumerate(filtered_search_results, 1):
+        title = item.get('title', f'{LEGACY_RESULT_PREFIX}{item_idx}')
+        filepath = get_scraped_content_filepath(scraped_content_subfolder, title, item_idx, slugify)
+        if filepath and os.path.exists(filepath):
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                aggregated_content.append(f"## Source: {title}\nURL: <{item.get('url')}>\n\n{content}\n")
+            except Exception as e:
+                warnings.append(f"Error reading file {filepath}: {e}")
+        else:
+            warnings.append(f"Scraped file for '{title}' not found at expected paths.")
+    if not aggregated_content:
+        return "No content could be scraped from the search results.", urls_this_iter, warnings
+    sources_text = "\n\n---\n\n".join(aggregated_content)
+    user_prompt = build_iteration_user_prompt(query, sources_text)
+    answer = simple_agentic_prompt(
+        user_prompt=user_prompt,
+        model_name=model_name,
+        temperature=temperature,
+        system_prompt=system_prompt
+    )
+    return answer, urls_this_iter, warnings
+
 def multi_agentic_search_scrape_answer(
     user_question: str,
-    num_iterations: int = 3,
-    num_results: int = 2,
-    model_name: str = "llama-3.3-70b-versatile",
-    temperature: float = 0.2,
-    system_prompt: Optional[str] = AGENTIC_SYSTEM_PROMPT,
-    scrape_output_folder: str = "outputs/_agent_temp_scraped",
-    jina_api_key: Optional[str] = None,
-    youtube_transcript_languages: Optional[List[str]] = None,
-    delay: float = 1.0
+    config: AgentConfig
 ) -> str:
     """
     Runs the full multi-agent workflow: generate queries, search, scrape, answer per iteration, synthesize.
     Ensures a unique output folder for each run.
     """
-    # 1. Generate Unique Output Folder Path for this Run
-    unique_run_folder = generate_query_slug(user_question, model_name=model_name)
-    # Define the specific subfolder for scraped content within the unique run folder
-    scraped_content_subfolder = os.path.join(unique_run_folder, "scraped_content") 
-
-    # Track all URLs scraped across all iterations
+    unique_run_folder = generate_query_slug(user_question, model_name=config.model_name)
+    scraped_content_subfolder = os.path.join(unique_run_folder, "scraped_content")
     already_scraped_urls = set()
-
-    # 2. Generate Diverse Search Queries
     print("\nGenerating unique, diverse search queries with the LLM...")
-    search_query_generation_prompt = (
-        f"Given the user question: '{user_question}', generate a list of {num_iterations} unique, diverse, and non-overlapping search queries that, together, will maximize the coverage of relevant information. "
-        "Each query should be different in focus, keywords, or angle, but all should be relevant to the user question. Output only the list, one per line."
-    )
+    search_query_generation_prompt = build_search_query_generation_prompt(user_question, config.num_iterations)
     queries_text = simple_agentic_prompt(
         user_prompt=search_query_generation_prompt,
-        model_name=model_name,
-        temperature=temperature,
-        system_prompt="You are a search query diversification agent."
+        model_name=config.model_name,
+        temperature=config.temperature,
+        system_prompt=SEARCH_QUERY_DIVERSIFICATION_SYSTEM_PROMPT
     )
-    # Parse queries (split by lines, remove empty)
     queries = [q.strip('"').strip() for q in queries_text.splitlines() if q.strip()]
-    if len(queries) < num_iterations:
-        print(f"Warning: Only {len(queries)} unique queries generated, expected {num_iterations}.")
-        queries += [user_question] * (num_iterations - len(queries))
+    if len(queries) < config.num_iterations:
+        print(f"Warning: Only {len(queries)} unique queries generated, expected {config.num_iterations}.")
+        queries += [user_question] * (config.num_iterations - len(queries))
     print("\nGenerated search queries:")
-    for i, q in enumerate(queries[:num_iterations], 1):
+    for i, q in enumerate(queries[:config.num_iterations], 1):
         print(f"{i}. {q}")
-
-    # 3. For each query, search, scrape, and answer
     answers = []
     search_prompts = []
     all_search_urls = []
-    for i in range(num_iterations):
+    for i in range(config.num_iterations):
         print(f"\n--- Iteration {i+1} ---")
         query = queries[i]
-        search_prompts.append(query)
-        print(f"Search prompt for iteration {i+1}: {query}")
-
-        # Search
-        search_results = get_brave_search_results(query, api_key=os.environ.get("BRAVE_API_KEY"), count=num_results)
-        if not search_results:
-            print(f"No search results for iteration {i+1}.")
-            answers.append("No search results found.")
-            all_search_urls.append([])
-            continue
-        # Filter out URLs already scraped in previous iterations
-        filtered_search_results = [item for item in search_results if item.get('url') and item.get('url') not in already_scraped_urls]
-        urls_this_iter = [item.get('url') for item in filtered_search_results if item.get('url')]
-        all_search_urls.append(urls_this_iter)
-        print(f"Brave search URLs for iteration {i+1} (excluding already scraped):")
-        for url in urls_this_iter:
-            print(f"- {url}")
-
-        if not filtered_search_results:
-            print(f"All search results for iteration {i+1} have already been scraped. Skipping.")
-            answers.append("No new search results to scrape.")
-            continue
-
-        # Scrape (Pass the unique path for this run's scraped content)
-        scrape_urls_to_markdown(
-            filtered_search_results,
-            scraped_content_subfolder, # Use the subfolder path within the unique run folder
-            jina_api_key=jina_api_key,
-            delay=delay,
-            youtube_transcript_languages=youtube_transcript_languages or ['en']
-        )
-        # Add these URLs to the already_scraped_urls set
-        already_scraped_urls.update(urls_this_iter)
-
-        # Aggregate content (Read from the correct subfolder)
-        aggregated_content = []
-        for item_idx, item in enumerate(filtered_search_results, 1):
-            title = item.get('title', f'result_{item_idx}')
-            slug = slugify(title)
-            # Ensure filename uniqueness within the subfolder (same logic as in scraper.py)
-            filename_candidate = f"{slug}.md"
-            filepath = os.path.join(scraped_content_subfolder, filename_candidate) 
-            file_counter = 1
-            while not os.path.exists(filepath):
-                 # If the primary name doesn't exist, check for numbered fallbacks
-                 filename_candidate = f"{slug}_{file_counter}.md"
-                 filepath = os.path.join(scraped_content_subfolder, filename_candidate)
-                 file_counter += 1
-                 if file_counter > 5: # Safety break to avoid infinite loop
-                      filepath = None # Assume file is missing
-                      break 
-            # If after checking numbered versions, still no file, try the original fallback
-            if not filepath or not os.path.exists(filepath):
-                 fallback = os.path.join(scraped_content_subfolder, f"result_{item_idx}.md") # Legacy name
-                 if os.path.exists(fallback):
-                      filepath = fallback
-                 else:
-                      print(f"Warning: Scraped file for '{title}' not found at expected paths in {scraped_content_subfolder}.")
-                      continue # Skip this result if file not found
-                      
-            if filepath:
-                 try:
-                      with open(filepath, 'r', encoding='utf-8') as f:
-                           content = f.read()
-                      aggregated_content.append(f"## Source: {title}\nURL: <{item.get('url')}>\n\n{content}\n")
-                 except Exception as e:
-                      print(f"Error reading file {filepath}: {e}")
-        
-        if not aggregated_content:
-            answers.append("No content could be scraped from the search results.")
-            continue
-        sources_text = "\n\n---\n\n".join(aggregated_content)
-        user_prompt = build_iteration_user_prompt(query, sources_text)
-        answer = simple_agentic_prompt(
-            user_prompt=user_prompt,
-            model_name=model_name,
-            temperature=temperature,
-            system_prompt=system_prompt
+        answer, urls_this_iter, warnings = execute_single_iteration(
+            query=query,
+            already_scraped_urls=already_scraped_urls,
+            scraped_content_subfolder=scraped_content_subfolder,
+            model_name=config.model_name,
+            temperature=config.temperature,
+            system_prompt=AGENTIC_SYSTEM_PROMPT,
+            num_search_results=config.num_search_results_per_iteration,
+            jina_api_key=config.jina_api_key,
+            youtube_transcript_languages=config.youtube_transcript_languages,
+            delay=config.delay
         )
         answers.append(answer)
+        search_prompts.append(query)
+        all_search_urls.append(urls_this_iter)
+        already_scraped_urls.update(urls_this_iter)
         print(f"\nAgentic answer for iteration {i+1} (truncated):\n{answer[:500]}\n{'...' if len(answer) > 500 else ''}")
-    
-    # 4. Boil down all answers into a final comprehensive answer
+        if warnings:
+            print("\nWarnings for iteration:")
+            for warning in warnings:
+                print(f"- {warning}")
     print("\n--- Boiling down all answers into a final comprehensive answer ---")
     boil_down_prompt = build_final_synthesis_prompt(user_question, answers)
     final_answer = simple_agentic_prompt(
         user_prompt=boil_down_prompt,
-        model_name=model_name,
-        temperature=temperature,
+        model_name=config.model_name,
+        temperature=config.temperature,
         system_prompt=FINAL_SYNTHESIS_SYSTEM_PROMPT
     )
     print("\nFINAL SYNTHESIZED ANSWER:\n")
     print(final_answer)
-
-    # Save the final answer and all per-iteration answers in the base of the query folder
-    output_file = os.path.join(unique_run_folder, "final_answer.md")
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write(final_answer)
-    print(f"\nFinal answer saved to {output_file}")
-
-    all_answers_file = os.path.join(unique_run_folder, "all_iteration_answers.md")
-    with open(all_answers_file, 'w', encoding='utf-8') as f:
-        for i, (prompt, answer, urls) in enumerate(zip(search_prompts, answers, all_search_urls), 1):
-            f.write(f"\n---\n\n# Iteration {i}\n\n## Search Prompt:\n{prompt}\n\n## Brave Search URLs:\n" + "\n".join(urls) + f"\n\n## Agentic Answer:\n{answer}\n")
-    print(f"All iteration answers saved to {all_answers_file}")
-
+    iteration_data = [{'search_prompt': prompt, 'answer': answer, 'urls': urls} for prompt, answer, urls in zip(search_prompts, answers, all_search_urls)]
+    model_config = {'model_name': config.model_name, 'temperature': config.temperature}
+    save_run_outputs(unique_run_folder, user_question, final_answer, iteration_data, model_config)
     return final_answer
 
 def run_search_and_synthesize_workflow(
-    user_question: str,
-    model_name: str = "meta-llama/llama-4-maverick-17b-128e-instruct",
-    temperature: float = 0.3,
-    num_iterations: int = 10,
-    search_results_per_iter: int = 8,
-    output_dir: str = None,
-    jina_api_key: str = None,
-    youtube_transcript_languages: list = None,
-    delay: float = 1.5
+    config: AgentConfig
 ):
     """
     Orchestrates the multi-agentic search, scrape, and synthesis workflow.
     """
-    if youtube_transcript_languages is None:
-        youtube_transcript_languages = ['en', 'pt']
-    if output_dir is None:
-        output_dir = generate_query_slug(user_question, model_name=model_name, temperature=0.0)
+    user_question = config.output_dir if config.output_dir else "User question not provided"
+    if config.youtube_transcript_languages is None:
+        config.youtube_transcript_languages = ['en', 'pt']
+    if config.output_dir is None:
+        output_dir = generate_query_slug(user_question, model_name=config.model_name, temperature=0.0)
+    else:
+        output_dir = config.output_dir
     scrape_output_folder = os.path.join(output_dir, "scraped_content")
     os.makedirs(output_dir, exist_ok=True)
-
     answers = []
     search_prompts = []
     all_search_urls = []
-
     print("\nGenerating unique, diverse search queries with the LLM...")
-    search_query_generation_prompt = (
-        f"Given the user question: '{user_question}', generate a list of {num_iterations} unique, diverse, and non-overlapping search queries that, together, will maximize the coverage of relevant information. "
-        "Each query should be different in focus, keywords, or angle, but all should be relevant to the user question. Output only the list, one per line."
-    )
+    search_query_generation_prompt = build_search_query_generation_prompt(user_question, config.num_iterations)
     queries_text = simple_agentic_prompt(
         user_prompt=search_query_generation_prompt,
-        model_name=model_name,
-        temperature=temperature,
-        system_prompt="You are a search query diversification agent."
+        model_name=config.model_name,
+        temperature=config.temperature,
+        system_prompt=SEARCH_QUERY_DIVERSIFICATION_SYSTEM_PROMPT
     )
     queries = [q.strip('"').strip() for q in queries_text.splitlines() if q.strip()]
-    if len(queries) < num_iterations:
-        print(f"Warning: Only {len(queries)} unique queries generated, expected {num_iterations}.")
-        queries += [user_question] * (num_iterations - len(queries))
+    if len(queries) < config.num_iterations:
+        print(f"Warning: Only {len(queries)} unique queries generated, expected {config.num_iterations}.")
+        queries += [user_question] * (config.num_iterations - len(queries))
     print("\nGenerated search queries:")
-    for i, q in enumerate(queries[:num_iterations], 1):
+    for i, q in enumerate(queries[:config.num_iterations], 1):
         print(f"{i}. {q}")
-
-    for i in range(num_iterations):
+    for i in range(config.num_iterations):
         print(f"\n--- Iteration {i+1} ---")
         search_prompt = queries[i]
-        search_prompts.append(search_prompt)
-        print(f"Search prompt for iteration {i+1}: {search_prompt}")
-
-        search_results = get_brave_search_results(search_prompt, api_key=os.environ.get("BRAVE_API_KEY"), count=search_results_per_iter)
-        if not search_results:
-            answers.append("No search results found.")
-            all_search_urls.append([])
-            continue
-        urls_this_iter = [item.get('url') for item in search_results if item.get('url')]
-        all_search_urls.append(urls_this_iter)
-        print(f"Brave search URLs for iteration {i+1}:")
-        for url in urls_this_iter:
-            print(f"- {url}")
-
-        scrape_urls_to_markdown(
-            search_results,
-            scrape_output_folder,
-            jina_api_key=jina_api_key,
-            delay=delay,
-            youtube_transcript_languages=youtube_transcript_languages
-        )
-        aggregated_content = []
-        for idx, item in enumerate(search_results, 1):
-            title = item.get('title', f'result_{idx}')
-            slug = slugify(title)
-            filename = f"{slug}.md"
-            filepath = os.path.join(scrape_output_folder, filename)
-            if not os.path.exists(filepath):
-                fallback = os.path.join(scrape_output_folder, f"result_{idx}.md")
-                if os.path.exists(fallback):
-                    filepath = fallback
-                else:
-                    print(f"[Scrape Error] Could not find file for '{title}' (slug: {slug}) in iteration {i+1}.")
-                    continue
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                aggregated_content.append(f"# {title}\n\n{content}\n")
-            except Exception as e:
-                print(f"[Scrape Error] Failed to read file {filepath}: {e}")
-        if not aggregated_content:
-            answers.append("No content could be scraped from the search results.")
-            continue
-        sources_text = "\n\n---\n\n".join(aggregated_content)
-        user_prompt = build_iteration_user_prompt(search_prompt, sources_text)
-        answer = simple_agentic_prompt(
-            user_prompt=user_prompt,
-            model_name=model_name,
-            temperature=temperature,
-            system_prompt=AGENTIC_SYSTEM_PROMPT
+        answer, urls_this_iter, warnings = execute_single_iteration(
+            query=search_prompt,
+            already_scraped_urls=set(),
+            scraped_content_subfolder=scrape_output_folder,
+            model_name=config.model_name,
+            temperature=config.temperature,
+            system_prompt=AGENTIC_SYSTEM_PROMPT,
+            num_search_results=config.num_search_results_per_iteration,
+            jina_api_key=config.jina_api_key,
+            youtube_transcript_languages=config.youtube_transcript_languages,
+            delay=config.delay
         )
         answers.append(answer)
+        search_prompts.append(search_prompt)
+        all_search_urls.append(urls_this_iter)
         print(f"\nAgentic answer for iteration {i+1} (truncated):\n{answer[:500]}\n{'...' if len(answer) > 500 else ''}")
-
+        if warnings:
+            print("\nWarnings for iteration:")
+            for warning in warnings:
+                print(f"- {warning}")
     print("\n--- Boiling down all answers into a final comprehensive answer ---")
     boil_down_prompt = build_final_synthesis_prompt(user_question, answers)
     final_answer = simple_agentic_prompt(
         user_prompt=boil_down_prompt,
-        model_name=model_name,
-        temperature=temperature,
+        model_name=config.model_name,
+        temperature=config.temperature,
         system_prompt=FINAL_SYNTHESIS_SYSTEM_PROMPT
     )
     print("\nFINAL SYNTHESIZED ANSWER:\n")
     print(final_answer)
-
-    output_file = os.path.join(output_dir, "final_answer.md")
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write(final_answer)
-    print(f"\nFinal answer saved to {output_file}")
-
-    all_answers_file = os.path.join(output_dir, "all_iteration_answers.md")
-    with open(all_answers_file, 'w', encoding='utf-8') as f:
-        for i, (prompt, answer, urls) in enumerate(zip(search_prompts, answers, all_search_urls), 1):
-            f.write(f"\n---\n\n# Iteration {i}\n\n## Search Prompt:\n{prompt}\n\n## Brave Search URLs:\n" + "\n".join(urls) + f"\n\n## Agentic Answer:\n{answer}\n")
-    print(f"All iteration answers saved to {all_answers_file}")
-
+    iteration_data = [{'search_prompt': prompt, 'answer': answer, 'urls': urls} for prompt, answer, urls in zip(search_prompts, answers, all_search_urls)]
+    model_config = {'model_name': config.model_name, 'temperature': config.temperature}
+    save_run_outputs(output_dir, user_question, final_answer, iteration_data, model_config)
     return final_answer
+
+def get_scraped_content_filepath(base_dir: str, title: str, item_index: int, slugify_func) -> str:
+    """
+    Returns the filepath for a scraped content file, ensuring uniqueness and handling legacy fallback names.
+    """
+    import os
+    slug = slugify_func(title)
+    # Try base slug
+    filename = f"{slug}.md"
+    filepath = os.path.join(base_dir, filename)
+    if os.path.exists(filepath):
+        # Try numbered versions for uniqueness
+        counter = 1
+        while True:
+            filename = f"{slug}_{counter}.md"
+            filepath = os.path.join(base_dir, filename)
+            if not os.path.exists(filepath):
+                break
+            counter += 1
+    # If file still doesn't exist, try legacy fallback
+    if not os.path.exists(filepath):
+        legacy_filename = f"{LEGACY_RESULT_PREFIX}{item_index}.md"
+        legacy_filepath = os.path.join(base_dir, legacy_filename)
+        if os.path.exists(legacy_filepath):
+            return legacy_filepath
+    return filepath
 
 # --- Example usage ---
 if __name__ == "__main__":
@@ -524,15 +394,15 @@ if __name__ == "__main__":
     test_jina_api_key = os.environ.get("JINA_API_KEY")
     test_youtube_transcript_languages = ['en', 'pt']
     test_delay = 1.0
-    run_search_and_synthesize_workflow(
-        user_question=test_query,
+    config = AgentConfig(
         model_name=test_model,
         temperature=test_temperature,
         num_iterations=test_num_iterations,
-        search_results_per_iter=test_search_results_per_iter,
+        num_search_results_per_iteration=test_search_results_per_iter,
         output_dir=test_output_dir,
         jina_api_key=test_jina_api_key,
         youtube_transcript_languages=test_youtube_transcript_languages,
         delay=test_delay
     )
+    run_search_and_synthesize_workflow(config=config)
     print("agent.py test complete.")
