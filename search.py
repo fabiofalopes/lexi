@@ -1,54 +1,23 @@
 import os
-from brave import Brave
-from typing import List, Dict, Optional
 from dotenv import load_dotenv
+from brave_search import get_brave_search_results # Import from brave_search.py
+from arquivo import search_text as get_arquivo_text_search_results # Import from arquivo.py
 
-def get_brave_search_results(query: str, api_key: str, count: int = 10) -> List[Dict[str, str]]:
+# Function to wrap Arquivo.pt text search
+def get_arquivo_search_results(query: str, max_items: int = 5):
     """
-    Retrieves top web search results from Brave Search API.
+    Retrieves text search results from Arquivo.pt.
 
     Args:
         query: The search term.
-        api_key: Your Brave Search API key.
-        count: The maximum number of results to return (default 10).
+        max_items: The maximum number of results to return (default 5).
 
     Returns:
-        A list of dictionaries, where each dictionary contains
-        the 'title' and 'url' of a search result. Returns an empty
-        list if an error occurs or no results are found.
+        The JSON response from Arquivo.pt API or None if an error occurs.
     """
-    results_list = []
-    try:
-        # Initialize the Brave client with the API key
-        brave = Brave(api_key=api_key)
-
-        # Perform the search, requesting only web results
-        # The 'search' method defaults to the 'web' endpoint
-        search_results = brave.search(q=query, count=count, result_filter="web")
-
-        # Access results using attributes of the WebSearchApiResponse object
-        if hasattr(search_results, 'web') and search_results.web and hasattr(search_results.web, 'results') and search_results.web.results:
-            web_results_list = search_results.web.results
-            # Limit to the requested count, as the API might return more internally
-            for result in web_results_list[:count]:
-                # Access attributes of the result object (likely also a custom type)
-                if hasattr(result, 'title') and hasattr(result, 'url'):
-                    results_list.append({
-                        'title': result.title,
-                        'url': str(result.url) # Ensure URL is a string
-                    })
-        else:
-            # This path should only be hit if the API response structure is missing 'web' or 'web.results'
-            print(f"Web results attribute not found or empty in API response for query: {query}")
-
-    except Exception as e:
-        print(f"An error occurred during Brave Search API call: {e}")
-        # Log the type of exception as well for more detail
-        print(f"Exception Type: {type(e).__name__}")
-        # Consider more specific error handling based on potential exceptions
-        # from the 'brave-search' library or network issues.
-
-    return results_list
+    print(f"[Arquivo.pt] Searching for: {query} (max_items={max_items})")
+    results = get_arquivo_text_search_results(q=query, max_items=max_items)
+    return results
 
 # --- Example Usage ---
 if __name__ == "__main__":
@@ -56,20 +25,32 @@ if __name__ == "__main__":
     # or a secure configuration method.
     load_dotenv()
 
-    brave_api_key = os.environ.get("BRAVE_API_KEY", "YOUR_BRAVE_API_KEY") # Replace with your key if not using env var
-
+    # --- Brave Search Example ---
+    brave_api_key = os.environ.get("BRAVE_API_KEY", "YOUR_BRAVE_API_KEY")
     if brave_api_key == "YOUR_BRAVE_API_KEY":
         print("Warning: Please set your BRAVE_API_KEY environment variable or replace 'YOUR_BRAVE_API_KEY' in the script.")
     else:
-        search_query = "best python web frameworks"
-        top_results = get_brave_search_results(search_query, brave_api_key, count=5) # Get top 5 results
-
-        if top_results:
-            print(f"Top {len(top_results)} Brave search results for '{search_query}':")
-            for i, result in enumerate(top_results, 1):
-                print(f"{i}. Title: {result.get('title')}") # Use .get for safety
+        search_query_brave = "latest AI advancements"
+        print(f"\n--- Running Brave Search for: '{search_query_brave}' ---")
+        top_results_brave = get_brave_search_results(search_query_brave, brave_api_key, count=3)
+        if top_results_brave:
+            print(f"Top {len(top_results_brave)} Brave search results:")
+            for i, result in enumerate(top_results_brave, 1):
+                print(f"{i}. Title: {result.get('title')}")
                 print(f"   URL: {result.get('url')}")
         else:
-            # Keep this message generic as failure could be API error or no results found
-            print(f"Could not retrieve results for '{search_query}'.")
+            print(f"Could not retrieve Brave results for '{search_query_brave}'.")
+
+    # --- Arquivo.pt Search Example ---
+    search_query_arquivo = "história de Portugal"
+    print(f"\n--- Running Arquivo.pt Search for: '{search_query_arquivo}' ---")
+    results_arquivo = get_arquivo_search_results(search_query_arquivo, max_items=3)
+    if results_arquivo and results_arquivo.get("response_items"):
+        print(f"Top {len(results_arquivo['response_items'])} Arquivo.pt search results:")
+        for i, item in enumerate(results_arquivo["response_items"], 1):
+            print(f"{i}. Title: {item.get('title')}")
+            print(f"   Original URL: {item.get('originalURL')}")
+            print(f"   Link to Archive: {item.get('linkToArchive')}")
+    else:
+        print(f"Could not retrieve Arquivo.pt results for '{search_query_arquivo}'.")
 

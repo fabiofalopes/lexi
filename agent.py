@@ -98,7 +98,7 @@ FINAL_SYNTHESIS_SYSTEM_PROMPT = (
 # --- Improved final synthesis user prompt template ---
 def build_final_synthesis_prompt(user_question: str, answers: list) -> str:
     return (
-        f"Given the user question: '{user_question}', and the following six answers from different search and scrape iterations, "
+        f"Given the user question: '{user_question}', and the following several answers from different search and scrape iterations, "
         "write a comprehensive, referenced Markdown answer that synthesizes all the information, cites sources, and is suitable for a technical audience.\n\n"
         "Instructions:\n"
         "- Be exhaustive and detailed.\n"
@@ -360,7 +360,7 @@ def multi_agentic_search_scrape_answer(
         )
         answers.append(answer)
         print(f"\nAgentic answer for iteration {i+1} (truncated):\n{answer[:500]}\n{'...' if len(answer) > 500 else ''}")
-
+    
     # 4. Boil down all answers into a final comprehensive answer
     print("\n--- Boiling down all answers into a final comprehensive answer ---")
     boil_down_prompt = build_final_synthesis_prompt(user_question, answers)
@@ -387,41 +387,34 @@ def multi_agentic_search_scrape_answer(
 
     return final_answer
 
-# --- Example usage ---
-if __name__ == "__main__":
-    print("Available Groq models:")
-    for k, v in GROQ_MODELS.items():
-        print(f"- {k}: {v}")
-    
-    #user_question = "Urze. Portugal, Coimbra, Pampilhosa da Serra, Malhada do Rei. Produção de mel e enxames de abelhas, rainhas e optimização das colónias, desdobramentos. Tradição do mel da Urze. Mecanismos de monitorização e controlo de colónias. Precision beekeeping. Como implementar soluções existentes e até open source para a nossa região?"
-    #user_question = "We want to implement our monitoring system for beehives. Open source solutions for beekeeping, lora, batteries, solar panels, recording audio, sensors"
-    #user_question = "Optimização precise beekeeping. Como produzir e escalar produção de enxames faze-las prosperar? Como cultivar urze de forma controlada? Especificamente, como cultivar na zona da Pampilhosa da Serra? Costuma ser feito ou já foi feito? Faz sentido fazer isso para optimizar a produção de enxames e a produção da colmeia em geral?" 
-    #user_question = "Urze em escala ou como como cultivar urze de forma intenciva e controlada de forma a potenciar essa flora em zona de montanha ou serra neste contexto, Pampilhosa da Serra, Malhada do Rei, Coimbra, Portugal, onde por terem ocorrido incendios perdeu essa flora e ainda não foi recuperada. Tecnica de refloração da flora nestes casos."
-    #user_question = "Estou interessado no projecto meshtastic Quero pesquisar mais sobre isso Quero saber como construir E essencialmente ter devices deste tipo o mais barato possível LoRa, LoRaWAN, meshtastic, diferenças, semelhanças, tudo o que está à volta desta tecnologia. Queremos perceber a stack inteira queremos perceber exactamente como participar e construir as nossas pr redes de baixo custo tanto energ como monet em si Queremos investir o mínimo possível, mas também estamos dispostos a comprar alguns devices, como é óbvio. E queremos aprender o máximo possível. o máximo possível. Portanto, queremos cavar o máximo mais profundamente possível do tipo de documentação, os dispositivos mais populares para comprar, como conseguir comunicar realmente abertamente dentro desta rede, como construir serviços dentro da rede, os meus projetos de exemplo, monitorização de locais remotos, projetos de telemetria, usar a rede Lora para transmissão de dados, streaming de informação, tudo isso e mais alguma coisa."
-    
-    print("\nRunning multi-agentic search-scrape-answer workflow...")
-
-    NUM_ITERATIONS = 10
-    SEARCH_RESULTS_PER_ITER = 8
-    model_name = "meta-llama/llama-4-maverick-17b-128e-instruct"
-    temperature = 0.3
-
-    # Generate a consistent folder name for this run based on the user query
-    output_dir = generate_query_slug(user_question, model_name=model_name, temperature=0.0)
+def run_search_and_synthesize_workflow(
+    user_question: str,
+    model_name: str = "meta-llama/llama-4-maverick-17b-128e-instruct",
+    temperature: float = 0.3,
+    num_iterations: int = 10,
+    search_results_per_iter: int = 8,
+    output_dir: str = None,
+    jina_api_key: str = None,
+    youtube_transcript_languages: list = None,
+    delay: float = 1.5
+):
+    """
+    Orchestrates the multi-agentic search, scrape, and synthesis workflow.
+    """
+    if youtube_transcript_languages is None:
+        youtube_transcript_languages = ['en', 'pt']
+    if output_dir is None:
+        output_dir = generate_query_slug(user_question, model_name=model_name, temperature=0.0)
     scrape_output_folder = os.path.join(output_dir, "scraped_content")
     os.makedirs(output_dir, exist_ok=True)
-    jina_api_key = os.environ.get("JINA_API_KEY")
-    youtube_transcript_languages = ['en', 'pt']
-    delay = 1.5
 
     answers = []
     search_prompts = []
     all_search_urls = []
 
-    # 1. Generate a list of unique, diverse search queries using the LLM
     print("\nGenerating unique, diverse search queries with the LLM...")
     search_query_generation_prompt = (
-        f"Given the user question: '{user_question}', generate a list of {NUM_ITERATIONS} unique, diverse, and non-overlapping search queries that, together, will maximize the coverage of relevant information. "
+        f"Given the user question: '{user_question}', generate a list of {num_iterations} unique, diverse, and non-overlapping search queries that, together, will maximize the coverage of relevant information. "
         "Each query should be different in focus, keywords, or angle, but all should be relevant to the user question. Output only the list, one per line."
     )
     queries_text = simple_agentic_prompt(
@@ -430,24 +423,21 @@ if __name__ == "__main__":
         temperature=temperature,
         system_prompt="You are a search query diversification agent."
     )
-    # Parse queries (split by lines, remove empty)
     queries = [q.strip('"').strip() for q in queries_text.splitlines() if q.strip()]
-    if len(queries) < NUM_ITERATIONS:
-        print(f"Warning: Only {len(queries)} unique queries generated, expected {NUM_ITERATIONS}.")
-        queries += [user_question] * (NUM_ITERATIONS - len(queries))
+    if len(queries) < num_iterations:
+        print(f"Warning: Only {len(queries)} unique queries generated, expected {num_iterations}.")
+        queries += [user_question] * (num_iterations - len(queries))
     print("\nGenerated search queries:")
-    for i, q in enumerate(queries[:NUM_ITERATIONS], 1):
+    for i, q in enumerate(queries[:num_iterations], 1):
         print(f"{i}. {q}")
 
-    # 2. For each query, search, scrape, and answer
-    for i in range(NUM_ITERATIONS):
+    for i in range(num_iterations):
         print(f"\n--- Iteration {i+1} ---")
         search_prompt = queries[i]
         search_prompts.append(search_prompt)
         print(f"Search prompt for iteration {i+1}: {search_prompt}")
 
-        # Brave search
-        search_results = get_brave_search_results(search_prompt, api_key=os.environ.get("BRAVE_API_KEY"), count=SEARCH_RESULTS_PER_ITER)
+        search_results = get_brave_search_results(search_prompt, api_key=os.environ.get("BRAVE_API_KEY"), count=search_results_per_iter)
         if not search_results:
             answers.append("No search results found.")
             all_search_urls.append([])
@@ -458,7 +448,6 @@ if __name__ == "__main__":
         for url in urls_this_iter:
             print(f"- {url}")
 
-        # Scrape
         scrape_urls_to_markdown(
             search_results,
             scrape_output_folder,
@@ -499,7 +488,6 @@ if __name__ == "__main__":
         answers.append(answer)
         print(f"\nAgentic answer for iteration {i+1} (truncated):\n{answer[:500]}\n{'...' if len(answer) > 500 else ''}")
 
-    # 3. Boil down all answers into a final comprehensive answer
     print("\n--- Boiling down all answers into a final comprehensive answer ---")
     boil_down_prompt = build_final_synthesis_prompt(user_question, answers)
     final_answer = simple_agentic_prompt(
@@ -511,7 +499,6 @@ if __name__ == "__main__":
     print("\nFINAL SYNTHESIZED ANSWER:\n")
     print(final_answer)
 
-    # Save the final answer and all per-iteration answers in the base of the query folder
     output_file = os.path.join(output_dir, "final_answer.md")
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(final_answer)
@@ -522,3 +509,30 @@ if __name__ == "__main__":
         for i, (prompt, answer, urls) in enumerate(zip(search_prompts, answers, all_search_urls), 1):
             f.write(f"\n---\n\n# Iteration {i}\n\n## Search Prompt:\n{prompt}\n\n## Brave Search URLs:\n" + "\n".join(urls) + f"\n\n## Agentic Answer:\n{answer}\n")
     print(f"All iteration answers saved to {all_answers_file}")
+
+    return final_answer
+
+# --- Example usage ---
+if __name__ == "__main__":
+    print("Testing agent.py workflow function...")
+    test_query = "What are the latest advancements in AI?"
+    test_model = "meta-llama/llama-4-maverick-17b-128e-instruct"
+    test_temperature = 0.3
+    test_num_iterations = 3
+    test_search_results_per_iter = 3
+    test_output_dir = "test_agent_output"
+    test_jina_api_key = os.environ.get("JINA_API_KEY")
+    test_youtube_transcript_languages = ['en', 'pt']
+    test_delay = 1.0
+    run_search_and_synthesize_workflow(
+        user_question=test_query,
+        model_name=test_model,
+        temperature=test_temperature,
+        num_iterations=test_num_iterations,
+        search_results_per_iter=test_search_results_per_iter,
+        output_dir=test_output_dir,
+        jina_api_key=test_jina_api_key,
+        youtube_transcript_languages=test_youtube_transcript_languages,
+        delay=test_delay
+    )
+    print("agent.py test complete.")
