@@ -286,12 +286,12 @@ def multi_agentic_search_scrape_answer(
     return final_answer
 
 def run_search_and_synthesize_workflow(
+    user_question: str,
     config: AgentConfig
 ):
     """
     Orchestrates the multi-agentic search, scrape, and synthesis workflow.
     """
-    user_question = config.output_dir if config.output_dir else "User question not provided"
     if config.youtube_transcript_languages is None:
         config.youtube_transcript_languages = ['en', 'pt']
     if config.output_dir is None:
@@ -362,25 +362,30 @@ def get_scraped_content_filepath(base_dir: str, title: str, item_index: int, slu
     """
     import os
     slug = slugify_func(title)
-    # Try base slug
+    
+    # Try base slug first
     filename = f"{slug}.md"
     filepath = os.path.join(base_dir, filename)
     if os.path.exists(filepath):
-        # Try numbered versions for uniqueness
-        counter = 1
-        while True:
-            filename = f"{slug}_{counter}.md"
-            filepath = os.path.join(base_dir, filename)
-            if not os.path.exists(filepath):
-                break
-            counter += 1
-    # If file still doesn't exist, try legacy fallback
-    if not os.path.exists(filepath):
-        legacy_filename = f"{LEGACY_RESULT_PREFIX}{item_index}.md"
-        legacy_filepath = os.path.join(base_dir, legacy_filename)
-        if os.path.exists(legacy_filepath):
-            return legacy_filepath
-    return filepath
+        return filepath
+    
+    # Try numbered versions (look for existing files, not non-existing ones!)
+    counter = 1
+    while counter <= 10:  # Reasonable limit to avoid infinite loops
+        filename = f"{slug}_{counter}.md"
+        filepath = os.path.join(base_dir, filename)
+        if os.path.exists(filepath):
+            return filepath
+        counter += 1
+    
+    # If numbered versions don't exist, try legacy fallback
+    legacy_filename = f"{LEGACY_RESULT_PREFIX}{item_index}.md"
+    legacy_filepath = os.path.join(base_dir, legacy_filename)
+    if os.path.exists(legacy_filepath):
+        return legacy_filepath
+    
+    # If nothing exists, return the base slug path (this will trigger the "file not found" warning)
+    return os.path.join(base_dir, f"{slug}.md")
 
 # --- Example usage ---
 if __name__ == "__main__":
@@ -404,5 +409,5 @@ if __name__ == "__main__":
         youtube_transcript_languages=test_youtube_transcript_languages,
         delay=test_delay
     )
-    run_search_and_synthesize_workflow(config=config)
+    run_search_and_synthesize_workflow(user_question=test_query, config=config)
     print("agent.py test complete.")
