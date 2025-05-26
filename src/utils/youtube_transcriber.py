@@ -146,12 +146,14 @@ def save_transcript_to_file(video_id: str, transcript_content: str, output_folde
 if __name__ == "__main__":
     # Test URLs:
     # example_video_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # English
-    example_video_url = "https://www.youtube.com/watch?v=Nsb7qocje-A" # User requested test URL
+    #example_video_url = "https://www.youtube.com/watch?v=Nsb7qocje-A" # User requested test URL
     # example_video_url = "https://www.youtube.com/watch?v=o_XVt5rdpFY" # Portuguese available
     # example_video_url = "https://youtu.be/rokGy0huYEA" # Shortened URL, English
     # example_video_url = "https://www.youtube.com/embed/LEd98A9334M" # Embed URL, English
     # example_video_url_no_transcript = "https://www.youtube.com/watch?v=AYmNUGdGabc" # Likely no manual transcript
     # example_video_url_private_or_deleted = "https://www.youtube.com/watch?v=xxxxxxxxxxx" # Non-existent
+    
+    example_video_url = "https://www.youtube.com/watch?v=V-TlS3SQUfU"
 
     output_directory = "youtube_transcripts"
     # To test different language preferences:

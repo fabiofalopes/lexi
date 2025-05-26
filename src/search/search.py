@@ -1,7 +1,7 @@
 import os
 from dotenv import load_dotenv
-from brave_search import get_brave_search_results # Import from brave_search.py
-from arquivo import search_text as get_arquivo_text_search_results # Import from arquivo.py
+from .brave_search import get_brave_search_results # Import from brave_search.py
+from .arquivo import search_text as get_arquivo_text_search_results # Import from arquivo.py
 
 # Function to wrap Arquivo.pt text search
 def get_arquivo_search_results(query: str, max_items: int = 5):

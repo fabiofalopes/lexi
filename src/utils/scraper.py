@@ -30,7 +30,7 @@ except ImportError:
 
 # Try to import from youtube_transcriber
 try:
-    from youtube_transcriber import extract_video_id, get_youtube_transcript
+    from .youtube_transcriber import extract_video_id, get_youtube_transcript
     YOUTUBE_TRANSCRIBER_AVAILABLE = True
 except ImportError:
     print("Warning: youtube_transcriber.py not found or YouTubeTranscriptApi not installed. YouTube transcript appending will be skipped.")
@@ -481,7 +481,7 @@ def scrape_urls_to_markdown(
 if __name__ == "__main__":
     from dotenv import load_dotenv
     try:
-        from search import get_brave_search_results
+        from ..search.search import get_brave_search_results
     except ImportError:
         print("Error: Could not import 'get_brave_search_results' from search.py.")
         print("Make sure search.py is in the same directory.")

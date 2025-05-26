@@ -39,8 +39,10 @@ class GroqLLMWrapper:
         )
         self.model_name = model_name
         self.temperature = temperature
+    
     def get_llm(self):
         return self.llm
+    
     def chat(self, messages: List[ChatMessage]) -> str:
         try:
             response = self.llm.chat(messages)
